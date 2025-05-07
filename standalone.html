@@ -1,0 +1,1386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Nonlinear JV Solver</title>
+    <script src="https://cdn.jsdelivr.net/pyodide/v0.24.1/full/pyodide.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.27.1/plotly.min.js"></script>
+    <style>
+        /* ... (keep existing CSS) ... */
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .control-group {
+            background-color: #f9f9f9;
+            padding: 15px;
+            border-radius: 5px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="range"] {
+            width: 100%;
+        }
+        .value-display {
+            text-align: center;
+            font-family: monospace;
+            margin-top: 5px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            /* display: block; */ /* Allow buttons side-by-side if needed */
+            /* width: 100%; */ /* Removed to allow side-by-side */
+            margin-top: 10px;
+            margin-right: 10px; /* Add spacing between buttons */
+        }
+        button:disabled {
+             background-color: #cccccc;
+             cursor: not-allowed;
+        }
+        button:hover:not(:disabled) {
+            background-color: #45a049;
+        }
+        .button-container {
+            text-align: center; /* Center buttons */
+            margin-bottom: 20px;
+        }
+        .loading {
+            text-align: center;
+            margin: 20px;
+            font-style: italic;
+            color: #666;
+        }
+        .output {
+            margin-top: 20px;
+        }
+        .results-container {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 20px;
+        }
+        .plot {
+            flex: 1 1 400px;
+            min-height: 400px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        #status {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 4px;
+            display: none; /* Initially hidden */
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .log-container {
+            margin-top: 20px;
+            max-height: 200px;
+            overflow-y: auto;
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 14px; /* Slightly larger for readability */
+        }
+        #log {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Heat Dissipation Simulation</h1>
+
+        <div class="controls">
+            <div class="control-group">
+                <label for="base-mult">Base Multiplier (1/Rsq):</label>
+                <input type="range" id="base-mult" min="-3" max="3" step="0.1" value="2">
+                <div class="value-display" id="base-mult-value">100</div>
+            </div>
+
+            <div class="control-group">
+                <label for="patch-mult">Patch Multiplier (Contact Cond):</label>
+                <input type="range" id="patch-mult" min="-3" max="1" step="0.1" value="-1">
+                <div class="value-display" id="patch-mult-value">0.1</div>
+            </div>
+
+            <div class="control-group">
+                <label for="pin-resistance">Pin Contact Resistance:</label>
+                <input type="range" id="pin-resistance" min="-3" max="1" step="0.1" value="-1">
+                <div class="value-display" id="pin-resistance-value">0.1</div>
+            </div>
+
+            <div class="control-group">
+                <label for="ito-mult">ITO Multiplier (1/Rsq):</label>
+                <input type="range" id="ito-mult" min="-2" max="2" step="0.1" value="0">
+                <div class="value-display" id="ito-mult-value">1</div>
+            </div>
+
+            <div class="control-group">
+                <label for="carbon-mult">Carbon Multiplier (1/Rsq):</label>
+                <input type="range" id="carbon-mult" min="-2" max="2" step="0.1" value="0">
+                <div class="value-display" id="carbon-mult-value">1</div>
+            </div>
+        </div>
+
+        <div class="button-container">
+             <button id="run-button" disabled>Load Pyodide & Packages...</button>
+             <button id="save-button" disabled>Save Results</button>
+        </div>
+
+        <div id="status"></div>
+
+        <div class="loading" id="loading" style="display: none;">
+            Running simulation, please wait... This may take a minute or more depending on parameters. Check log below for progress.
+        </div>
+
+        <div class="output" id="output">
+            <div class="results-container">
+                <div id="ito-potential" class="plot"></div>
+                <div id="carbon-potential" class="plot"></div>
+                <div id="total-power" class="plot"></div>
+                <div id="contact-power" class="plot"></div>
+            </div>
+        </div>
+
+        <div class="log-container">
+            <pre id="log"></pre> <!-- Use <pre> for better formatting -->
+        </div>
+    </div>
+
+    <script>
+        // Elements
+        const baseMult = document.getElementById('base-mult');
+        const patchMult = document.getElementById('patch-mult');
+        const pinResistance = document.getElementById('pin-resistance');
+        const itoMult = document.getElementById('ito-mult');
+        const carbonMult = document.getElementById('carbon-mult');
+
+        const baseMultValue = document.getElementById('base-mult-value');
+        const patchMultValue = document.getElementById('patch-mult-value');
+        const pinResistanceValue = document.getElementById('pin-resistance-value');
+        const itoMultValue = document.getElementById('ito-mult-value');
+        const carbonMultValue = document.getElementById('carbon-mult-value');
+
+        const runButton = document.getElementById('run-button');
+        const saveButton = document.getElementById('save-button');
+        const loading = document.getElementById('loading');
+        const status = document.getElementById('status');
+        const log = document.getElementById('log');
+
+        // --- Log Function ---
+        const originalConsoleLog = console.log;
+        const originalConsoleError = console.error;
+
+        function logMessage(message, isError = false) {
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = `[${timestamp}] ${message}`;
+            log.textContent += logEntry + '\n';
+            log.scrollTop = log.scrollHeight; // Auto-scroll
+            if (isError) {
+                originalConsoleError(logEntry);
+            } else {
+                originalConsoleLog(logEntry);
+            }
+        }
+
+        // Override console.log and console.error
+        console.log = (...args) => {
+            logMessage(args.map(arg => typeof arg === 'object' ? JSON.stringify(arg, null, 2) : arg).join(' '));
+        };
+        console.error = (...args) => {
+            logMessage(args.map(arg => typeof arg === 'object' ? JSON.stringify(arg, null, 2) : arg).join(' '), true);
+        };
+
+        // --- Slider Updates ---
+        function updateDisplayValue(slider, valueElement) {
+            try {
+                const value = Math.pow(10, parseFloat(slider.value));
+                valueElement.textContent = value.toExponential(1);
+            } catch (e) {
+                console.error("Error updating display value:", e);
+                valueElement.textContent = "Error";
+            }
+        }
+
+        baseMult.addEventListener('input', () => updateDisplayValue(baseMult, baseMultValue));
+        patchMult.addEventListener('input', () => updateDisplayValue(patchMult, patchMultValue));
+        pinResistance.addEventListener('input', () => updateDisplayValue(pinResistance, pinResistanceValue));
+        itoMult.addEventListener('input', () => updateDisplayValue(itoMult, itoMultValue));
+        carbonMult.addEventListener('input', () => updateDisplayValue(carbonMult, carbonMultValue));
+
+        // Automatically run the simulation when inputs change
+        const inputs = [baseMult, patchMult, pinResistance, itoMult, carbonMult];
+        inputs.forEach(input => {
+            input.addEventListener('input', () => {
+                console.log("Input changed, running simulation...");
+                runSimulation();
+            });
+        });
+
+        // Initialize displayed values
+        updateDisplayValue(baseMult, baseMultValue);
+        updateDisplayValue(patchMult, patchMultValue);
+        updateDisplayValue(pinResistance, pinResistanceValue);
+        updateDisplayValue(itoMult, itoMultValue);
+        updateDisplayValue(carbonMult, carbonMultValue);
+
+        // --- Pyodide Setup ---
+        let pyodide = null;
+        let jvSolverCodeLoaded = false;
+        let lastResultData = null; // Store the latest successful result
+
+        async function loadPyodideAndPackages() {
+            console.log("Loading Pyodide...");
+            status.textContent = "Loading Pyodide runtime...";
+            status.className = "";
+            status.style.display = "block";
+            try {
+                pyodide = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.24.1/full/" });
+                console.log("Pyodide loaded successfully.");
+                status.textContent = "Pyodide loaded. Loading packages (numpy, scipy, pandas)...";
+
+                await pyodide.loadPackage("micropip");
+                const micropip = pyodide.pyimport("micropip");
+
+                console.log("Installing numpy...");
+                await micropip.install('numpy');
+                console.log("Installing scipy...");
+                await micropip.install('scipy');
+                console.log("Installing pandas...");
+                await micropip.install('pandas');
+                // matplotlib is not strictly needed for Plotly but installed in original code
+                console.log("Installing matplotlib...");
+                await micropip.install('matplotlib');
+
+                console.log("Required packages installed.");
+                status.textContent = "Packages loaded. Loading simulation code...";
+
+                await loadJVSolverCode();
+                jvSolverCodeLoaded = true;
+
+                runButton.disabled = false;
+                runButton.textContent = "Run Simulation";
+                status.textContent = "Ready to run simulation.";
+                status.className = "success";
+                // Optionally hide status after a delay
+                // setTimeout(() => { status.style.display = "none"; }, 3000);
+
+            } catch (error) {
+                console.error("Error during Pyodide/Package loading:", error);
+                status.textContent = "Error loading Pyodide or packages: " + error.message;
+                status.className = "error";
+                runButton.textContent = "Loading Failed";
+            }
+        }
+        async function loadJVSolverCode() {
+            console.log("Loading JV solver Python code (based on provided script)...");
+            const jvSolverCode = `
+import numpy as np
+from scipy import sparse
+from scipy.sparse.linalg import spsolve
+from scipy.interpolate import interp1d
+import time
+from scipy.ndimage import gaussian_filter # Ensure import is present
+import pandas as pd # Needed for saving
+import io # Needed for saving
+import json # Needed for JS communication
+
+
+
+# ==================================
+# NonlinearJVSolver Class (from script)
+# ==================================
+class NonlinearJVSolver:
+    def __init__(self, iv, R_sq_matrix, R_sh_matrix, contact_conductance_matrix=None, scaling_factor=1, scaling_divisor=1, anneal=50):
+        print(f"Initializing NonlinearJVSolver: shape={R_sq_matrix.shape}")
+        self.nx, self.ny = R_sq_matrix.shape
+        self.R_sq_matrix_fix = R_sq_matrix.copy() # Use copy
+        self.R_sq_matrix = R_sq_matrix.copy()
+        self.R_sh_matrix = R_sh_matrix
+        self.scaling = scaling_factor / scaling_divisor
+        self.anneal = anneal # Note: Annealing logic is in solve_single_voltage, which is not used by main_combined here
+
+        # Pre-calculate indices for matrix construction
+        self.indices = np.arange(self.nx * self.ny).reshape(self.nx, self.ny)
+        self.R_sh_thresh = 1e50 # Threshold for infinite shunt
+
+        # Setup contact mask
+        if contact_conductance_matrix is None:
+            print("Warning: contact_conductance_matrix is None, creating default.")
+            self.contact_conductance = np.zeros((self.nx, self.ny))
+            # Default contact area (e.g., center strip on right edge) - might need adjustment
+            # self.contact_conductance[self.nx//4:self.nx-self.nx//4, -1] = 1.0 # Example from script's comment
+        else:
+            if contact_conductance_matrix.shape != (self.nx, self.ny):
+                 raise ValueError(f"Shape mismatch: contact_conductance_matrix {contact_conductance_matrix.shape} vs grid {(self.nx, self.ny)}")
+            self.contact_conductance = contact_conductance_matrix
+
+        # Setup IV interpolation (ensure iv has V in col 0, J in col 1)
+        iv_v = iv[:, 0]
+        iv_j = iv[:, 1]
+
+        # Setup IV interpolation - handling callable iv case is removed as main path uses array
+        print(f"IV data range: V={iv_v.min():.2f} to {iv_v.max():.2f}, J={iv_j.min():.2e} to {iv_j.max():.2e}")
+        self.iv_0_intp = interp1d(iv_v, iv_j * self.scaling**2,
+                                 kind="cubic", fill_value="extrapolate")
+
+        # Setup conductance interpolation (dJ/dV)
+        # Use voltage range from IV data for V_fine
+        V_fine = np.linspace(iv_v.min(), iv_v.max(), 5000) # Reduced points slightly
+        J_fine = self.iv_0_intp(V_fine)
+        dV = V_fine[1] - V_fine[0]
+        conductance_fine = np.gradient(J_fine, dV)
+
+        # Use linear interpolation for conductance as per script
+        self.div_intp = interp1d(V_fine, conductance_fine,
+                                kind="linear", fill_value="extrapolate")
+        print("Solver initialized.")
+
+
+    def _build_matrix(self, phi, V_contact_matrix):
+        """Builds the sparse matrix A and RHS vector b based on script logic."""
+        n = self.nx * self.ny
+        phi_flat = phi.ravel() # Ensure phi is flat if not already
+        V_contact_flat = V_contact_matrix.ravel()
+
+        # --- Calculate Conductance G = dJ/dV ---
+        # Using the specific formula from the script: G ~ (dJ/dV)^0.3 * 1e-6
+        conductance_base = self.div_intp(phi_flat)
+        # Ensure conductance_base is non-negative before taking fractional power
+        conductance_base[conductance_base < 0] = 1e-9 # Floor negative base conductance
+        conductance = (conductance_base ** 0.3) * 1e-6 * self.scaling**2
+        conductance[conductance < 1e-12] = 1e-12 # Floor final conductance
+
+
+        # Pre-allocate lists for COO format matrix construction
+        data, rows, cols = [], [], []
+
+        # --- Vertical connections ---
+        for i in range(self.nx - 1):
+            # Harmonic mean for conductivity (1/R_sq)
+            # Ensure no division by zero if R_sq can be infinite
+            R_sq_current = self.R_sq_matrix[i, :]
+            R_sq_next = self.R_sq_matrix[i+1, :]
+            # Add small epsilon to avoid division by zero if R_sq is 0? Assume R_sq > 0
+            sigma_v = 2 / (R_sq_current + R_sq_next) # Simplified harmonic mean? Script uses 2 / (1/sigma1 + 1/sigma2) = 2*sigma1*sigma2/(sigma1+sigma2) ?? Let's match the script's effective R arithmetic mean:
+            sigma_v = 2 / (self.R_sq_matrix[i, :] + self.R_sq_matrix[i+1, :]) # This is conductivity
+
+            idx1 = self.indices[i, :]
+            idx2 = self.indices[i+1, :]
+
+            data.extend(sigma_v) # Off-diagonal = conductivity sigma
+            rows.extend(idx1)
+            cols.extend(idx2)
+            data.extend(sigma_v)
+            rows.extend(idx2)
+            cols.extend(idx1)
+
+        # --- Horizontal connections ---
+        for j in range(self.ny - 1):
+            sigma_h = 2 / (self.R_sq_matrix[:, j] + self.R_sq_matrix[:, j+1])
+
+            idx1 = self.indices[:, j]
+            idx2 = self.indices[:, j+1]
+
+            data.extend(sigma_h)
+            rows.extend(idx1)
+            cols.extend(idx2)
+            data.extend(sigma_h)
+            rows.extend(idx2)
+            cols.extend(idx1)
+
+        # --- Calculate diagonal terms (following script's logic) ---
+        # Start with the negative sum of off-diagonal conductances connected to each node
+        diag_data = -np.bincount(rows, weights=data, minlength=n)
+
+        # Add the local 'conductance' term (G from script's formula)
+        diag_data += conductance.ravel() # Script adds this term
+
+        # Subtract shunt conductance (G_shunt = 1/R_sh)
+        shunt_conductance = np.where(self.R_sh_matrix < self.R_sh_thresh, 1.0 / self.R_sh_matrix, 0.0).ravel()
+        diag_data -= shunt_conductance
+
+        # Subtract fixed contact conductance (G_contact) where contacts exist
+        contact_conductances_flat = self.contact_conductance.ravel()
+        contact_indices = np.where(contact_conductances_flat != 0)[0]
+        diag_data[contact_indices] -= contact_conductances_flat[contact_indices]
+
+        # Add diagonal terms to matrix data
+        data.extend(diag_data)
+        rows.extend(np.arange(n))
+        cols.extend(np.arange(n))
+
+        # Create sparse matrix in CSR format
+        A = sparse.csr_matrix((data, (rows, cols)), shape=(n, n))
+
+        # --- Build RHS vector b (following script's logic) ---
+        # b = J(phi) + phi * G(phi) - G_contact * V_contact
+        J_gen = self.iv_0_intp(phi_flat)
+        b = (J_gen + phi_flat * conductance).ravel() # Base RHS from script
+
+        # Subtract contact term G_contact * V_contact where contacts exist
+        b[contact_indices] -= contact_conductances_flat[contact_indices] * V_contact_flat[contact_indices]
+
+        return A, b
+
+    def calculate_power_dissipation(self, phi, V_contact_matrix):
+        """Calculate power dissipation components based on script logic."""
+        print(f"Calculating power dissipation for shape {phi.shape}")
+        # Initialize power matrices
+        sheet_power = np.zeros_like(phi)
+        shunt_power = np.zeros_like(phi)
+
+        # Calculate generated power (negative of dissipated)
+        J_photo = self.iv_0_intp(phi) # This is the generated current density J(V)
+        photo_power = -J_photo * phi # Power = J * V. Negative sign because it's generated.
+
+        # Calculate sheet resistance power dissipation (I^2*R or V^2/R or V*I)
+        # Using V*I form: Sum over connections (V_diff * I) = V_diff * (V_diff * sigma)
+        for i in range(self.nx):
+            for j in range(self.ny):
+                # Vertical connection (i,j) to (i+1,j)
+                if i < self.nx - 1:
+                    # Use same sigma as in _build_matrix
+                    sigma_v = 2 / (self.R_sq_matrix[i,j] + self.R_sq_matrix[i+1,j])
+                    delta_V = phi[i+1,j] - phi[i,j]
+                    power_v = sigma_v * delta_V**2
+                    sheet_power[i,j] += power_v / 2
+                    sheet_power[i+1,j] += power_v / 2
+
+                # Horizontal connection (i,j) to (i,j+1)
+                if j < self.ny - 1:
+                    sigma_h = 2 / (self.R_sq_matrix[i,j] + self.R_sq_matrix[i,j+1])
+                    delta_V = phi[i,j+1] - phi[i,j]
+                    power_h = sigma_h * delta_V**2
+                    sheet_power[i,j] += power_h / 2
+                    sheet_power[i,j+1] += power_h / 2
+
+        # Shunt power dissipation (V^2 / R_sh)
+        shunt_power = np.where(self.R_sh_matrix < self.R_sh_thresh,
+                               phi**2 / self.R_sh_matrix,
+                               0.0)
+
+        # Contact power dissipation ((phi - V_contact)^2 * G_contact)
+        # V_contact is a MATRIX here
+        contact_power = self.contact_conductance * (phi - V_contact_matrix)**2
+
+        # Total power = Dissipated (sheet + shunt + contact) - Generated (photo_power has neg sign)
+        total_power = sheet_power + shunt_power + contact_power + photo_power
+
+        print("Power calculation finished for this solver.")
+        return {
+            'sheet_power': sheet_power,
+            'photo_power': photo_power, # Power generated (usually negative)
+            'contact_power': contact_power, # Power dissipated at fixed contacts
+            'shunt_power': shunt_power,
+            'total_power': total_power # Net power dissipation at node
+        }
+
+    def calculate_contact_current(self, phi, V_contact_matrix):
+        """Calculate the total current flowing OUT of the device INTO the fixed contacts."""
+        J_contact_total = np.sum(self.contact_conductance * (phi - V_contact_matrix))
+        return J_contact_total
+
+# ==================================
+# Helper Functions (from script)
+# ==================================
+
+
+def solve_combined_layers(ito_solver, carbon_solver, overlap_region, carbon_V_contact_matrix, ito_V_contact_matrix, phi_ito, phi_carbon):
+    """Solve the combined ITO-Carbon system using a single block matrix approach (from script)."""
+    print("Solving combined layers (Block Matrix)...")
+    # Get dimensions
+    n_ito = ito_solver.nx * ito_solver.ny
+    n_carbon = carbon_solver.nx * carbon_solver.ny
+    n_total = n_ito + n_carbon
+    print(f"System size: ITO={n_ito}, Carbon={n_carbon}, Total={n_total}")
+
+    # Get individual layer matrices and vectors using their respective _build_matrix
+    # Pass FLATTENED phi arrays to build_matrix
+    A_ito, b_ito = ito_solver._build_matrix(phi_ito.ravel(), ito_V_contact_matrix)
+    A_carbon, b_carbon = carbon_solver._build_matrix(phi_carbon.ravel(), carbon_V_contact_matrix)
+    print("Built individual layer matrices and RHS vectors.")
+
+    # Initialize the combined matrix in COO format for efficient construction
+    data = []
+    row_ind = []
+    col_ind = []
+
+    # Convert CSR matrices to COO format for easy access to indices
+    A_ito_coo = A_ito.tocoo()
+    A_carbon_coo = A_carbon.tocoo()
+
+    # Add ITO block
+    data.extend(A_ito_coo.data)
+    row_ind.extend(A_ito_coo.row)
+    col_ind.extend(A_ito_coo.col)
+
+    # Add Carbon block (shifting indices)
+    data.extend(A_carbon_coo.data)
+    row_ind.extend(A_carbon_coo.row + n_ito)
+    col_ind.extend(A_carbon_coo.col + n_ito)
+    print(f"Added diagonal blocks. Non-zeros so far: {len(data)}")
+
+    # Add coupling terms between layers based on overlap_region
+    ito_overlap_indices = overlap_region['ito_indices']
+    carbon_overlap_indices = overlap_region['carbon_indices']
+    overlap_conductance = overlap_region['conductance']
+
+    # Add coupling terms: affects diagonal of each layer and adds off-diagonal block terms
+    # For each coupled pair (ito_idx, carbon_idx) with conductance sigma:
+    # Equation for ito_idx: ... - sigma * (phi_ito[ito_idx] - phi_carbon[carbon_idx]) ...
+    # Equation for carbon_idx: ... - sigma * (phi_carbon[carbon_idx] - phi_ito[ito_idx]) ...
+
+    # Adjust diagonal elements
+    # Use np.add.at for efficient indexed addition to lists/arrays if possible,
+    # otherwise, build adjustments and add later.
+    diag_adjust_ito = np.zeros(n_ito)
+    diag_adjust_carbon = np.zeros(n_carbon)
+    np.add.at(diag_adjust_ito, ito_overlap_indices, -overlap_conductance) # Subtract sigma from ITO diagonal
+    np.add.at(diag_adjust_carbon, carbon_overlap_indices, -overlap_conductance) # Subtract sigma from Carbon diagonal
+
+    # Add off-diagonal coupling terms sigma * phi_other
+    # For row ito_idx, add column carbon_idx + n_ito with value +sigma
+    # For row carbon_idx + n_ito, add column ito_idx with value +sigma
+    data.extend(overlap_conductance) # ito_idx -> carbon_idx link
+    row_ind.extend(ito_overlap_indices)
+    col_ind.extend(carbon_overlap_indices + n_ito)
+
+    data.extend(overlap_conductance) # carbon_idx -> ito_idx link
+    row_ind.extend(carbon_overlap_indices + n_ito)
+    col_ind.extend(ito_overlap_indices)
+    print(f"Added coupling terms. Non-zeros so far: {len(data)}")
+
+    # Build the combined matrix including diagonal adjustments
+    A_combined_coo = sparse.coo_matrix((data, (row_ind, col_ind)), shape=(n_total, n_total))
+    # Add diagonal adjustments efficiently
+    diag_indices = np.arange(n_total)
+    diag_adjust = np.concatenate([diag_adjust_ito, diag_adjust_carbon])
+    A_combined = A_combined_coo + sparse.diags(diag_adjust, offsets=0, shape=(n_total, n_total))
+    A_combined = A_combined.tocsr() # Convert to CSR for solving
+    print(f"Assembled combined matrix. Final non-zeros: {A_combined.nnz}")
+
+
+    # Create combined b vector
+    b_combined = np.concatenate([b_ito, b_carbon])
+    print("Assembled combined RHS vector.")
+
+    # Solve combined system: A_combined * phi_combined = b_combined
+    print("Solving the linear system...")
+    start_solve_time = time.time()
+    try:
+        phi_combined = spsolve(A_combined, b_combined)
+        solve_time = time.time() - start_solve_time
+        print(f"Linear system solved in {solve_time:.3f} seconds.")
+    except Exception as e:
+        print(f"ERROR during sparse solve: {e}")
+        # Handle error - maybe return NaNs or raise exception
+        raise RuntimeError(f"Sparse solve failed: {e}")
+
+    # Extract solutions for each layer
+    phi_ito_solved = phi_combined[:n_ito].reshape(ito_solver.nx, ito_solver.ny)
+    phi_carbon_solved = phi_combined[n_ito:].reshape(carbon_solver.nx, carbon_solver.ny)
+    print("Extracted solutions for ITO and Carbon layers.")
+
+    return {
+        'ito_phi': phi_ito_solved,
+        'carbon_phi': phi_carbon_solved,
+        # 'combined_matrix': A_combined, # Avoid returning large matrix if not needed
+        # 'combined_rhs': b_combined
+    }
+
+
+def create_rectangular_overlap(ito_solver, carbon_solver,
+                            ito_region_coords, carbon_region_coords, conductance):
+    """Create overlap indices for a rectangular region on both devices (from script)."""
+    print("Creating rectangular overlap...")
+    # Extract region coordinates ((x_start, x_end), (y_start, y_end))
+    (ito_x_start, ito_x_end), (ito_y_start, ito_y_end) = ito_region_coords
+    (carbon_x_start, carbon_x_end), (carbon_y_start, carbon_y_end) = carbon_region_coords
+    print(f"ITO region: x={ito_x_start}-{ito_x_end}, y={ito_y_start}-{ito_y_end}")
+    print(f"Carbon region: x={carbon_x_start}-{carbon_x_end}, y={carbon_y_start}-{carbon_y_end}")
+
+    # Verify regions have same size
+    ito_nx_region = ito_x_end - ito_x_start
+    ito_ny_region = ito_y_end - ito_y_start
+    carbon_nx_region = carbon_x_end - carbon_x_start
+    carbon_ny_region = carbon_y_end - carbon_y_start
+
+    if ito_nx_region != carbon_nx_region or ito_ny_region != carbon_ny_region:
+        raise ValueError(f"Overlap regions must have the same size. "
+                         f"ITO: ({ito_nx_region}x{ito_ny_region}), "
+                         f"Carbon: ({carbon_nx_region}x{carbon_ny_region})")
+    region_size = ito_nx_region * ito_ny_region
+    if region_size <= 0:
+         raise ValueError("Overlap region size must be positive.")
+    print(f"Overlap region size: {ito_nx_region}x{ito_ny_region} = {region_size} points.")
+
+    # Create meshgrid indices within each layer's coordinate system
+    ito_region_x_indices = np.arange(ito_x_start, ito_x_end)
+    ito_region_y_indices = np.arange(ito_y_start, ito_y_end)
+    carbon_region_x_indices = np.arange(carbon_x_start, carbon_x_end)
+    carbon_region_y_indices = np.arange(carbon_y_start, carbon_y_end)
+
+    # Use meshgrid to get all pairs of coordinates within the region
+    ito_xx, ito_yy = np.meshgrid(ito_region_x_indices, ito_region_y_indices, indexing='ij')
+    carbon_xx, carbon_yy = np.meshgrid(carbon_region_x_indices, carbon_region_y_indices, indexing='ij')
+
+    # Convert local region coordinates to global linear indices
+    ito_indices_flat = (ito_xx.ravel() * ito_solver.ny + ito_yy.ravel()).astype(int)
+    carbon_indices_flat = (carbon_xx.ravel() * carbon_solver.ny + carbon_yy.ravel()).astype(int)
+
+    # Create conductance array (uniform conductance)
+    conductance_array = np.full(region_size, conductance, dtype=float)
+    print(f"Overlap conductance value: {conductance}")
+
+    return {
+        'ito_indices': ito_indices_flat,
+        'carbon_indices': carbon_indices_flat,
+        'conductance': conductance_array
+    }
+
+# ==================================
+# Main Simulation Function (adapted from script)
+# ==================================
+def main_combined(base_mult = 1e2, patch_mult = 1e-1 , pin_contact_resistance=1e-1,
+                   ito_mult=1e0, carbon_mult = 1e0, debug=False, patch_spatial_mult= None ):
+    """Initialize and solve the combined ITO-Carbon system using block matrix approach (from script)."""
+    args_dict = locals() # Capture input arguments
+    print(f"--- Starting main_combined ---")
+    print(f"Input Parameters: {args_dict}")
+    # --- System Parameters (from script) ---
+    scale = 2 # Increased scale for faster browser execution (smaller grid)
+    nx = 64 // scale # Reduced resolution significantly
+    ny = 64 // scale
+    print(f"Grid dimensions (ITO): nx={nx}, ny={ny}")
+
+    R_sq_base = 1e3 / base_mult # Base sheet resistance (Ohm/sq) - Script uses 1e3*scale/base_mult ? Using 1e3/base_mult
+    carbon_R_sq_base = R_sq_base
+    carbon_start_v = 4.0 # Start voltage for carbon contact (from script)
+    ito_start_v = 1.0  # Start voltage for ITO contact (from script)
+
+    # Calculate carbon dimensions (from script)
+    carbon_nx = ny
+    carbon_ny = nx // 2
+    print(f"Grid dimensions (Carbon): nx={carbon_nx}, ny={carbon_ny}")
+
+    # --- IV Curve (Use J=0 as per script's main_combined) ---
+    V = np.linspace(-1, 1.5, 100) # Reduced points for interpolation
+    J = V * 0.0 # Zero current IV curve from script's main_combined
+    iv = np.vstack([V, J]).T
+    print("Using J=0 IV curve for simulation.")
+
+    contact_width = max(1, ny // 8) # Ensure at least 1 cell width, adjusted for smaller grid
+    n_iter = 15 # Number of iterations for the block solver relaxation (increased from script's 1)
+    dampening = 0.8 # Dampening factor for iterative updates (0 to 1)
+
+    # --- Conductances (from script) ---
+    # Conductance = 1 / Resistance.
+    var_contact_conduction = (1.0 / R_sq_base) * patch_mult if R_sq_base > 0 else 1e9 # Conductance between layers per overlapping cell
+    fixed_contact_conduction = (1.0 / pin_contact_resistance) if pin_contact_resistance > 0 else 1e9 # Conductance to external voltage source per contact cell
+    print(f"Calculated Conductances: VarContact={var_contact_conduction:.2e}, FixedContact={fixed_contact_conduction:.2e}")
+
+
+    # ===== ITO Layer Setup =====
+    print("Setting up ITO layer...")
+    ito_R_sq = (R_sq_base / ito_mult) * np.ones((nx, ny))
+    ito_R_sh = np.full((nx, ny), 1e50) # Effectively infinite shunt
+
+    # ITO contacts (Fixed voltage) - from script
+    ito_contact_conductance = np.zeros((nx, ny))
+    ito_contact_indices_rows = np.arange(nx * 3 // 4, nx) # Indices for rows with contacts (-nx//4 from end)
+    ito_contact_indices_cols = np.arange(0, contact_width) # Indices for columns with contacts
+    ito_contact_mask = np.ix_(ito_contact_indices_rows, ito_contact_indices_cols)
+    ito_contact_conductance[ito_contact_mask] = fixed_contact_conduction # Fixed contact on bottom-left side area
+    print(f"ITO fixed contact area: {len(ito_contact_indices_rows)}x{len(ito_contact_indices_cols)} cells")
+
+    ito_V_contact_matrix = np.zeros((nx, ny)) # Matrix holding voltage values at contacts
+    ito_V_contact_matrix[ito_contact_conductance > 0] = ito_start_v
+
+    ito_solver = NonlinearJVSolver(
+        iv,
+        R_sq_matrix=ito_R_sq,
+        R_sh_matrix=ito_R_sh,
+        contact_conductance_matrix=ito_contact_conductance,
+        scaling_factor=0.5, # from script
+        anneal=1 # from script (not used in block solve path)
+    )
+
+    # ===== Carbon Layer Setup =====
+    print("Setting up Carbon layer...")
+    carbon_R_sq = (carbon_R_sq_base / carbon_mult) * np.ones((carbon_nx, carbon_ny))
+    carbon_R_sh = np.full((carbon_nx, carbon_ny), 1e50) # Infinite shunt
+
+    # Carbon contacts (Fixed voltage) - from script
+    carbon_contact_conductance = np.zeros((carbon_nx, carbon_ny))
+    carbon_contact_indices_rows = np.arange(carbon_nx - contact_width, carbon_nx) # Bottom rows
+    carbon_contact_indices_cols = np.arange(0, carbon_ny // 2) # Left half columns
+    carbon_contact_mask = np.ix_(carbon_contact_indices_rows, carbon_contact_indices_cols)
+    carbon_contact_conductance[carbon_contact_mask] = fixed_contact_conduction # Fixed contact on bottom-left area
+    print(f"Carbon fixed contact area: {len(carbon_contact_indices_rows)}x{len(carbon_contact_indices_cols)} cells")
+
+    carbon_V_contact_matrix = np.zeros((carbon_nx, carbon_ny)) # Matrix holding voltage values at contacts
+    carbon_V_contact_matrix[carbon_contact_conductance > 0] = carbon_start_v
+
+    carbon_solver = NonlinearJVSolver(
+        iv,
+        R_sq_matrix=carbon_R_sq,
+        R_sh_matrix=carbon_R_sh,
+        contact_conductance_matrix=carbon_contact_conductance,
+        scaling_factor=1, # from script
+        anneal=1 # from script
+    )
+
+    # ===== Define Overlap Region (from script) =====
+    print("Defining overlap region...")
+    # ito_region: Bottom right quadrant of ITO
+    ito_region_coords = ((nx // 2, nx), (ny // 2, ny))
+    # carbon_region: Top left quadrant of Carbon (relative to carbon grid)
+    carbon_region_coords = ((0, carbon_nx // 2), (0, carbon_ny))
+
+    try:
+        overlap = create_rectangular_overlap(
+            ito_solver, carbon_solver,
+            ito_region_coords, carbon_region_coords,
+            var_contact_conduction
+        )
+        print(f"Overlap created successfully.")
+    except ValueError as e:
+        print(f"ERROR creating overlap: {e}")
+        raise # Re-raise critical error
+
+    # Apply spatial multiplier if provided (from script)
+    if patch_spatial_mult is not None:
+        print(f"Applying spatial multiplier to patch conductance.")
+        patch_conductance = overlap['conductance']
+        patch_conductance *= patch_spatial_mult # Modify conductance array
+        overlap['conductance'] = patch_conductance # Update dict
+
+
+    # ===== Solve Combined System Iteratively (using block solver inside loop) =====
+    print(f"Starting iterative solve using block matrix ({n_iter} iterations, dampening={dampening})...")
+    # Initial potential guesses (from script)
+    phi_ito = np.ones((nx, ny)) * ito_start_v + (np.random.rand(nx, ny) - 0.5) * 0.3
+    phi_carbon = np.ones((carbon_nx, carbon_ny)) * carbon_start_v + (np.random.rand(carbon_nx, carbon_ny) - 0.5) * 0.3
+
+    total_start_time = time.time()
+    for iter_num in range(n_iter):
+        iter_start_time = time.time()
+        phi_ito_old = phi_ito.copy()
+        phi_carbon_old = phi_carbon.copy()
+
+        # Solve the block system for one step
+        try:
+             # Pass the current potential guess (phi_ito, phi_carbon) to build the matrix for this iteration
+            block_result = solve_combined_layers(
+                ito_solver, carbon_solver, overlap,
+                carbon_V_contact_matrix=carbon_V_contact_matrix, # Pass the fixed contact voltage MATRIX
+                ito_V_contact_matrix=ito_V_contact_matrix,       # Pass the fixed contact voltage MATRIX
+                phi_ito=phi_ito,           # Current guess for ITO potential
+                phi_carbon=phi_carbon      # Current guess for Carbon potential
+            )
+            phi_ito_new = block_result['ito_phi']
+            phi_carbon_new = block_result['carbon_phi']
+
+        except Exception as e:
+             print(f"ERROR in solve_combined_layers at iteration {iter_num}: {e}")
+             # Handle error, maybe break or return last good result?
+             # For now, break the loop
+             break
+
+        # Apply dampening (from script)
+        phi_ito = phi_ito_old * (1 - dampening) + phi_ito_new * dampening
+        phi_carbon = phi_carbon_old * (1 - dampening) + phi_carbon_new * dampening
+
+        # Check change for convergence monitoring (optional)
+        ito_change = np.max(np.abs(phi_ito - phi_ito_old))
+        carbon_change = np.max(np.abs(phi_carbon - phi_carbon_old))
+        iter_time = time.time() - iter_start_time
+
+        print(f"Iter {iter_num+1}/{n_iter}: Max Change ITO={ito_change:.3e}, Carbon={carbon_change:.3e}, Time={iter_time:.2f}s")
+
+        # Optional: Add convergence check based on change
+        # if max(ito_change, carbon_change) < 1e-5:
+        #      print(f"Converged after {iter_num + 1} iterations.")
+        #      break
+    else: # If loop finishes without break
+         if n_iter > 1 : print(f"Finished {n_iter} iterations.")
+
+    total_time = time.time() - total_start_time
+    print(f"Total simulation time: {total_time:.2f} seconds")
+
+    # Prepare results dictionary, including necessary info for power calculation
+    final_result = {
+        "ito_phi": phi_ito,
+        "carbon_phi": phi_carbon,
+        "ito_solver": ito_solver, # Contains config like R_sq etc.
+        "carbon_solver": carbon_solver,
+        "ito_v": ito_V_contact_matrix, # Boundary condition MATRIX
+        "carbon_v": carbon_V_contact_matrix, # Boundary condition MATRIX
+        "overlap_info": overlap, # Conductance, indices
+        "ito_region_coords": ito_region_coords, # Coords defining overlap
+        "carbon_region_coords": carbon_region_coords,
+        "var_contact_conduction": var_contact_conduction, # Value used
+        "params": args_dict # Store input params for reference
+    }
+    print("--- main_combined finished ---")
+    return final_result
+
+
+# ==================================
+# Final Power Calculation (adapted from script)
+# ==================================
+def calculate_power_dissipation_final(result):
+    """Calculate final power maps for visualization based on script's logic."""
+    print("Calculating final power dissipation maps..")
+    try:
+        # Check if essential data is present
+        required_keys = ['ito_solver', 'carbon_solver', 'ito_phi', 'carbon_phi', 'ito_v', 'carbon_v',
+                         'ito_region_coords', 'carbon_region_coords', 'var_contact_conduction']
+        if not all(key in result for key in required_keys):
+            missing = [key for key in required_keys if key not in result]
+            raise KeyError(f"Result dictionary missing required keys for power calculation: {missing}")
+
+
+        # Get power dissipation from both solvers using their calculate_power_dissipation methods
+        print("Calculating power for ITO layer...")
+        dissipated_power_ito = result['ito_solver'].calculate_power_dissipation(result['ito_phi'], result['ito_v'])
+        print("Calculating power for Carbon layer...")
+        dissipated_power_carbon = result['carbon_solver'].calculate_power_dissipation(result['carbon_phi'], result['carbon_v'])
+
+        # Get shapes
+        ito_shape = dissipated_power_ito['sheet_power'].shape
+        carbon_shape = dissipated_power_carbon['sheet_power'].shape
+        print(f"Power map shapes: ITO={ito_shape}, Carbon={carbon_shape}")
+
+        # Create combined canvas size (using script's 1.5x height factor)
+        # Assume ITO grid width is the reference width
+        canvas_nx = int(ito_shape[0] * 1.5)
+        canvas_ny = ito_shape[1] # Assume width matches ITO
+        print(f"Combined canvas size: {canvas_nx} x {canvas_ny}")
+
+        # Initialize combined power maps
+        sheet_power_sum = np.zeros((canvas_nx, canvas_ny))
+        contact_power_sum = np.zeros((canvas_nx, canvas_ny)) # Power between layers
+        # Add other power components if needed (e.g., fixed contact power)
+
+        # === Place sheet power maps onto canvas ===
+        # ITO sheet power (top part)
+        sheet_power_sum[:ito_shape[0], :ito_shape[1]] += dissipated_power_ito['sheet_power']
+        # Carbon sheet power (bottom part)
+        # Ensure indices match layout and don't overlap unintentionally
+        carbon_start_row = ito_shape[0] # Place Carbon directly below ITO? Or use canvas_nx - carbon_shape[0]? Script implies bottom align:
+        carbon_start_row = canvas_nx - carbon_shape[0]
+        carbon_start_col = canvas_ny - carbon_shape[1] # Align Carbon to the right edge of the canvas? Or left? Script implies right:
+        sheet_power_sum[carbon_start_row : carbon_start_row + carbon_shape[0],
+                        carbon_start_col : carbon_start_col + carbon_shape[1]] += dissipated_power_carbon['sheet_power']
+        print("Combined sheet power maps.")
+
+        # === Calculate and place inter-layer contact power ===
+        # Get potentials in the overlap regions
+        # Need to use the COORDINATES from result to get slices
+        (ito_x_start, ito_x_end), (ito_y_start, ito_y_end) = result['ito_region_coords']
+        (carbon_x_start, carbon_x_end), (carbon_y_start, carbon_y_end) = result['carbon_region_coords']
+
+        ito_phi_overlap = result['ito_phi'][ito_x_start:ito_x_end, ito_y_start:ito_y_end]
+        carbon_phi_overlap = result['carbon_phi'][carbon_x_start:carbon_x_end, carbon_y_start:carbon_y_end]
+
+        # Check shapes match
+        if ito_phi_overlap.shape != carbon_phi_overlap.shape:
+             raise ValueError(f"Potential map shapes in overlap differ: ITO {ito_phi_overlap.shape}, Carbon {carbon_phi_overlap.shape}")
+
+        # Power = G * (V_ito - V_carbon)^2
+        inter_layer_power_map = (ito_phi_overlap - carbon_phi_overlap)**2 * result['var_contact_conduction']
+        print(f"Calculated inter-layer power map, shape: {inter_layer_power_map.shape}")
+
+        # Place this map onto the 'contact_power_sum' canvas
+        # Location based on script: bottom part, slightly shifted up (-carbon_shape[0]//2)
+        # Map carbon region coordinates to canvas coordinates
+        canvas_place_row_start = canvas_nx - carbon_shape[0] + carbon_x_start # Map carbon x start to canvas row
+        canvas_place_row_end = canvas_place_row_start + (carbon_x_end - carbon_x_start)
+        canvas_place_col_start = canvas_ny - carbon_shape[1] + carbon_y_start # Map carbon y start to canvas col
+        canvas_place_col_end = canvas_place_col_start + (carbon_y_end - carbon_y_start)
+
+        # Adjust row end based on script's shift: up by carbon_shape[0]//2
+        canvas_place_row_end_shifted = canvas_nx - carbon_shape[0] // 2
+
+        # Ensure slicing does not exceed map dimensions
+        row_slice_len = min(canvas_place_row_end, canvas_place_row_end_shifted) - canvas_place_row_start
+        col_slice_len = canvas_place_col_end - canvas_place_col_start
+        map_row_end = min(inter_layer_power_map.shape[0], row_slice_len)
+        map_col_end = min(inter_layer_power_map.shape[1], col_slice_len)
+
+        #print(f"Placing inter-layer power onto canvas at row slice {dest_row_start}:{dest_row_start + src_row_count}, col slice {dest_col_start}:{dest_col_start + src_col_count}") 
+
+        if map_row_end > 0 and map_col_end > 0:
+            contact_power_sum[canvas_place_row_start : canvas_place_row_start + map_row_end,
+                              canvas_place_col_start : canvas_place_col_start + map_col_end] = inter_layer_power_map[:map_row_end, :map_col_end]
+            print("Placed inter-layer power map onto canvas.")
+        else:
+            print("Warning: Calculated slice for placing inter-layer power has zero size.")
+
+
+        # === Calculate final total power map (from script) ===
+        final = sheet_power_sum + contact_power_sum
+        # Apply cutoffs from script
+        final[canvas_nx - carbon_shape[0] // 4 :, :] = 0 # Zero out bottom quarter of carbon region
+        final[:, : ito_shape[1] // 10] = 0 # Zero out left 10% of ITO region width
+        print("Calculated final combined power map with cutoffs applied.")
+
+        # Apply Gaussian filter for smoother visualization (sigma=0.5 from script)
+        sigma = 0.5
+        total_power_blurred = gaussian_filter(final, sigma=sigma)
+        print(f"Applied Gaussian filter (sigma={sigma}).")
+
+        print("Final power calculation finished.")
+        # Return maps relevant for plotting
+        return {
+            # Include individual components if needed for debugging plots later
+            'sheet_power': sheet_power_sum,
+            'contact_power': contact_power_sum, # Renamed from script's 'contact_patch_power'
+            'total_power': final, # Raw total power after cutoffs
+            'total_power_blurred': total_power_blurred # Smoothed total power
+        }
+    except Exception as e:
+        print(f"ERROR during final power calculation: {e}")
+        import traceback
+        traceback.print_exc()
+        # Return empty or zero arrays to avoid breaking plots
+        return {
+             'sheet_power': np.zeros((10,10)),
+             'contact_power': np.zeros((10,10)),
+             'total_power': np.zeros((10,10)),
+             'total_power_blurred': np.zeros((10,10)),
+             'error': f"Power calculation failed: {e}"
+        }
+
+
+# ==================================
+# JavaScript Interface Functions
+# ==================================
+
+# Function to convert numpy arrays/types to JSON serializable types
+def np_encoder(obj):
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (np.int_, np.intc, np.intp, np.int8,
+                        np.int16, np.int32, np.int64, np.uint8,
+                        np.uint16, np.uint32, np.uint64)):
+        return int(obj)
+    elif isinstance(obj, (np.float_, np.float16, np.float32,
+                          np.float64)):
+        # Handle NaN and Inf safely for JSON
+        if np.isnan(obj): return None # or 'NaN' as string
+        if np.isinf(obj): return 1e300 if obj > 0 else -1e300 # or 'Infinity' as string
+        return float(obj)
+    elif isinstance(obj, (np.complex_, np.complex64, np.complex128)):
+        return {'real': obj.real, 'imag': obj.imag}
+    elif isinstance(obj, (np.bool_)):
+        return bool(obj)
+    elif isinstance(obj, (np.void)):
+        return None
+    # Handle slice objects or tuples if they appear in results (e.g., region coords)
+    elif isinstance(obj, slice):
+         return {'start': obj.start, 'stop': obj.stop, 'step': obj.step}
+    elif isinstance(obj, tuple):
+         return tuple(np_encoder(item) for item in obj) # Recursively encode tuples
+    # Fallback for other types
+    try:
+        return str(obj) # Try converting to string as a last resort
+    except Exception:
+        raise TypeError(f'Object of type {obj.__class__.__name__} is not JSON serializable')
+
+
+def run_and_get_results(base_mult, patch_mult, pin_contact_resistance, ito_mult, carbon_mult):
+    """Runs main_combined and power calculation, returning JSON."""
+    results_data = {}
+    try:
+        print("--- Python: Calling main_combined ---")
+        result = main_combined(
+            base_mult=base_mult,
+            patch_mult=patch_mult,
+            pin_contact_resistance=pin_contact_resistance,
+            ito_mult=ito_mult,
+            carbon_mult=carbon_mult,
+            debug=True # Enable debug prints in Python
+        )
+        print("--- Python: main_combined Finished ---")
+
+        print("--- Python: Calling calculate_power_dissipation_final ---")
+        power_data = calculate_power_dissipation_final(result)
+        print("--- Python: Power Calculation Finished ---")
+
+        # Prepare data for JavaScript, only send necessary arrays for plotting
+        results_data = {
+            'ito_phi': result['ito_phi'],
+            'carbon_phi': result['carbon_phi'],
+            # Include power data if calculated successfully
+            **power_data, # Merge power dict (handles case where power calc failed)
+            'params': result['params'] # Include input params
+            # Avoid sending solver objects or large intermediate arrays unless needed
+        }
+        print("--- Python: Preparing JSON Output ---")
+        # Use default=np_encoder for robust numpy/slice/tuple serialization
+        json_output = json.dumps(results_data, default=np_encoder)
+        print("--- Python: JSON Output Ready ---")
+        return json_output
+
+    except Exception as e:
+        print(f"--- Python: ERROR Encountered ---")
+        import traceback
+        error_details = traceback.format_exc()
+        print(error_details) # Log traceback in Python console (visible in browser dev tools)
+        # Return error information as JSON
+        error_result = {"error": str(e), "traceback": error_details}
+        # Use default=np_encoder here too, just in case error object isn't serializable
+        return json.dumps(error_result, default=np_encoder)
+
+
+def create_csv_from_data(data_array):
+    """Creates CSV string from a 2D numpy array passed from JS."""
+    print("--- Python: Starting CSV Creation ---")
+    try:
+        if not isinstance(data_array, np.ndarray):
+             # If JS sends a list of lists, convert it
+             data_array = np.array(data_array)
+             #print("Converted input data to numpy array.")
+
+        if data_array.ndim != 2:
+             raise ValueError(f"Input data must be 2-dimensional for CSV export, got {data_array.ndim} dimensions.")
+
+        df = pd.DataFrame(data_array)
+        print(f"Created pandas DataFrame with shape {df.shape}")
+        # Use StringIO to write CSV to a string buffer
+        with io.StringIO() as buffer:
+              df.to_csv(buffer, index=False, header=False) # No index or header for simple data dump
+              csv_string = buffer.getvalue()
+        print(f"--- Python: CSV String Created (length: {len(csv_string)}) ---")
+        return json.dumps({"csv_string": csv_string}) # Return as JSON object
+
+    except Exception as e:
+        print(f"--- Python: ERROR Creating CSV ---")
+        import traceback
+        error_details = traceback.format_exc()
+        print(error_details)
+        return json.dumps({"error": str(e), "traceback": error_details})
+
+print("Python script environment loaded successfully.");
+
+            `; // End of the massive jvSolverCode string
+
+            try {
+                 await pyodide.runPythonAsync(jvSolverCode);
+                 console.log("JV solver Python code (script-based) loaded and executed successfully.");
+                 jvSolverCodeLoaded = true; // Set flag indicating code is ready
+                 // Update button/status if needed, handled in loadPyodideAndPackages
+            } catch (error) {
+                 console.error("Error executing the loaded Python simulation code:", error);
+                 logMessage("Failed to initialize Python simulation environment: " + error.message, true);
+                 // Update status to reflect failure
+                 status.textContent = "Error initializing Python code: " + error.message;
+                 status.className = "error";
+                 status.style.display = "block";
+                 runButton.textContent = "Init Failed";
+                 runButton.disabled = true;
+                 jvSolverCodeLoaded = false; // Ensure flag is false on error
+            }
+        } // End of loadJVSolverCode
+
+        // --- Simulation Execution ---
+        async function runSimulation() {
+            if (!pyodide || !jvSolverCodeLoaded) {
+                console.error("Pyodide or simulation code not ready.");
+                status.textContent = "Error: Pyodide not initialized.";
+                status.className = "error";
+                status.style.display = "block";
+                return;
+            }
+
+            runButton.disabled = true;
+            saveButton.disabled = true;
+            loading.style.display = "block";
+            status.style.display = "none"; // Hide previous status
+            log.textContent = ""; // Clear previous logs
+            lastResultData = null; // Clear previous results
+            console.log("--- Simulation Run Started ---");
+
+            try {
+                const baseMultVal = Math.pow(10, parseFloat(baseMult.value));
+                const patchMultVal = Math.pow(10, parseFloat(patchMult.value));
+                const pinResistanceVal = Math.pow(10, parseFloat(pinResistance.value));
+                const itoMultVal = Math.pow(10, parseFloat(itoMult.value));
+                const carbonMultVal = Math.pow(10, parseFloat(carbonMult.value));
+
+                logMessage(`Running simulation with params:
+                    base_mult: ${baseMultVal.toExponential(1)}
+                    patch_mult: ${patchMultVal.toExponential(1)}
+                    pin_resistance: ${pinResistanceVal.toExponential(1)}
+                    ito_mult: ${itoMultVal.toExponential(1)}
+                    carbon_mult: ${carbonMultVal.toExponential(1)}`);
+
+                // Clear previous plots
+                Plotly.purge('ito-potential');
+                Plotly.purge('carbon-potential');
+                Plotly.purge('total-power');
+                Plotly.purge('contact-power');
+
+
+                // Use the dedicated Python function 'run_and_get_results'
+                // Pass parameters directly to the function
+                const resultJson = await pyodide.runPythonAsync(`
+                    run_and_get_results(
+                        base_mult=${baseMultVal},
+                        patch_mult=${patchMultVal},
+                        pin_contact_resistance=${pinResistanceVal},
+                        ito_mult=${itoMultVal},
+                        carbon_mult=${carbonMultVal}
+                    )
+                `);
+
+                // Parse the JSON result from Python
+                const resultObj = JSON.parse(resultJson);
+
+                if (resultObj.error) {
+                    // Throw the error to be caught by the catch block
+                    throw new Error(`Python Error: ${resultObj.error}\nTraceback:\n${resultObj.traceback}`);
+                }
+
+                // Store successful result and plot
+                lastResultData = resultObj; // Store for saving
+                plotResults(resultObj);
+
+                console.log("Simulation completed successfully.");
+                status.textContent = "Simulation completed successfully!";
+                status.className = "success";
+                status.style.display = "block";
+                saveButton.disabled = false; // Enable saving
+
+            } catch (error) {
+                console.error("Error running simulation:", error);
+                logMessage(`Simulation failed: ${error.message}`, true); // Log error message
+                status.textContent = "Simulation failed. Check log for details.";
+                status.className = "error";
+                status.style.display = "block";
+                // Optionally display error message directly
+                // status.textContent = "Error: " + error.message;
+            } finally {
+                runButton.disabled = false;
+                loading.style.display = "none";
+                console.log("--- Simulation Run Finished ---");
+            }
+        }
+
+        // --- Plotting ---
+        function plotResults(result) {
+             console.log("Plotting results...");
+             const plotLayoutOptions = {
+                 margin: { t: 40, b: 40, l: 50, r: 20 }, // Adjusted margins
+                 colorbar: { len: 0.8 },
+                 xaxis: { title: 'Y index', scaleanchor: 'y' }, // Link axes for 1:1 aspect ratio
+                 yaxis: { title: 'X index', autorange: 'reversed', scaleanchor: 'x' }, // Ensure 1:1 aspect ratio by linking axes
+             };
+
+             try {
+                 // Check if data exists before plotting
+                 if (result.ito_phi) {
+                     Plotly.newPlot('ito-potential', [{
+                         z: result.ito_phi,
+                         type: 'heatmap',
+                         colorscale: 'Viridis',
+                         zsmooth: false // 'fast' or false
+                     }], {
+                         title: 'ITO Potential (V)',
+                         ...plotLayoutOptions
+                     });
+                 } else { console.warn("No ITO potential data to plot."); }
+
+                 if (result.carbon_phi) {
+                     Plotly.newPlot('carbon-potential', [{
+                         z: result.carbon_phi,
+                         type: 'heatmap',
+                         colorscale: 'Viridis',
+                         zsmooth: false
+                     }], {
+                         title: 'Carbon Potential (V)',
+                         ...plotLayoutOptions
+                     });
+                 } else { console.warn("No Carbon potential data to plot."); }
+
+                 // Check for power data before plotting
+                 if (result.total_power_blurred) {
+                     Plotly.newPlot('total-power', [{
+                         z: result.total_power_blurred,
+                         type: 'heatmap',
+                         colorscale: 'Hot',
+                         zsmooth: false
+                     }], {
+                         title: 'Total Power Density',
+                         ...plotLayoutOptions
+                     });
+                 } else { console.warn("No total power data to plot."); }
+
+                 if (result.contact_power) {
+                     Plotly.newPlot('contact-power', [{
+                         z: result.contact_power,
+                         type: 'heatmap',
+                         colorscale: 'Hot',
+                         zsmooth: false
+                     }], {
+                         title: 'Inter-Layer Power Density', // Clarified title
+                         ...plotLayoutOptions
+                     });
+                 } else { console.warn("No contact power data to plot."); }
+                 console.log("Plotting finished.");
+
+             } catch(plotError) {
+                  console.error("Error generating plots:", plotError);
+                  status.textContent = "Simulation successful, but plotting failed: " + plotError.message;
+                  status.className = "error";
+                  status.style.display = "block";
+             }
+        }
+
+        // --- Saving Results ---
+        async function saveResults() {
+            if (!lastResultData) {
+                console.error("No simulation data available to save.");
+                status.textContent = "Run a simulation first before saving results.";
+                status.className = "error";
+                status.style.display = "block";
+                return;
+            }
+
+            // Decide which data to save, e.g., 'total_power_blurred'
+            const dataToSave = lastResultData.total_power_blurred;
+            if (!dataToSave || !Array.isArray(dataToSave)) {
+                 console.error("Selected data for saving is missing or invalid:", dataToSave);
+                 status.textContent = "Error: Data for saving ('total_power_blurred') is missing or invalid.";
+                 status.className = "error";
+                 status.style.display = "block";
+                 return;
+            }
+
+            console.log("Initiating save process...");
+            saveButton.disabled = true; // Disable button during saving
+            status.textContent = "Generating CSV file...";
+            status.className = "";
+            status.style.display = "block";
+
+            try {
+                // Pass the JavaScript array to the Python function using pyodide.toPy
+                // This is more efficient for large arrays than embedding in the string
+                const dataPy = pyodide.toPy(dataToSave);
+
+                // Call the Python function 'create_csv_from_data'
+                const csvResultJson = await pyodide.runPythonAsync(`
+                    # Ensure the data variable is accessible in this scope
+                    # It's passed via setJsVariable or implicitly available if runPythonAsync handles it
+                    # For safety, let's retrieve it from globals if needed, or rely on pyodide.toPy's handling
+                    # Assuming 'dataPy' is available via pyodide.runPythonAsync magic or prior variable setting:
+                    create_csv_from_data(data_py)
+                `, { globals: pyodide.globals.set("data_py", dataPy) }); // Explicitly pass data to Python globals
+
+                dataPy.destroy(); // Clean up the PyProxy
+
+                const csvResult = JSON.parse(csvResultJson);
+
+                if (csvResult.error) {
+                     throw new Error(`Python CSV generation error: ${csvResult.error}\nTraceback:\n${csvResult.traceback}`);
+                }
+
+                const csvString = csvResult.csv_string;
+
+                // Generate filename in JavaScript using current slider values
+                const params = [
+                    `base_${Math.pow(10, parseFloat(baseMult.value)).toExponential(1)}`,
+                    `patch_${Math.pow(10, parseFloat(patchMult.value)).toExponential(1)}`,
+                    `pinres_${Math.pow(10, parseFloat(pinResistance.value)).toExponential(1)}`,
+                    `ito_${Math.pow(10, parseFloat(itoMult.value)).toExponential(1)}`,
+                    `carbon_${Math.pow(10, parseFloat(carbonMult.value)).toExponential(1)}`
+                ].join('_');
+                const filename = `jv_solver_power_${params}.csv`;
+
+                // Create download link
+                const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.setAttribute('href', url);
+                link.setAttribute('download', filename);
+                link.style.visibility = 'hidden';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(url); // Clean up the object URL
+
+                console.log(`Results saved as ${filename}`);
+                status.textContent = "Results saved successfully!";
+                status.className = "success";
+                status.style.display = "block";
+
+            } catch (error) {
+                console.error("Error saving results:", error);
+                logMessage(`Failed to save results: ${error.message}`, true); // Log error
+                status.textContent = "Error saving results. Check log for details.";
+                status.className = "error";
+                status.style.display = "block";
+            } finally {
+                saveButton.disabled = false; // Re-enable button
+            }
+        }
+
+        // --- Event Listeners ---
+        runButton.addEventListener('click', runSimulation);
+        saveButton.addEventListener('click', saveResults);
+
+        // --- Initial Load ---
+        // Start loading Pyodide and packages when the script runs
+        loadPyodideAndPackages();
+
+        setTimeout(() => {
+            console.log("Starting simulation automatically after timeout...");
+            runSimulation();
+        }, 5000); // 5000ms = 5 seconds
+
+    </script>
+</body>
+</html>
